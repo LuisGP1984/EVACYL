@@ -1333,3 +1333,82 @@ class BaseDatosCurso:
                     criterio.id in criterios_evaluados_por_evaluacion[evaluacion.id]
                 )
         return criterios, evaluaciones, evaluado
+
+    # -- copiar estructura de una materia a otra (misma BD u otro curso) ----
+    #
+    # Pensado para cuando un docente imparte la misma materia en varios
+    # grupos, o repite estructura curso tras curso: en vez de montar
+    # criterios e instrumentos desde cero cada vez, copia la estructura ya
+    # hecha de una materia existente a una materia nueva (vacía de
+    # alumnado y notas). base_datos_origen y self pueden ser la misma
+    # instancia (copiar dentro del mismo curso.db) o instancias distintas
+    # abiertas sobre dos archivos .db diferentes (copiar entre cursos
+    # académicos distintos).
+
+    def copiar_criterios_desde(self, base_datos_origen: "BaseDatosCurso", materia_origen_id: int, materia_destino_id: int):
+        """Copia los criterios (código + peso) de una materia a otra,
+        sin tocar alumnado ni notas. Devuelve un mapa {criterio_id_origen: criterio_id_destino},
+        útil para copiar_instrumentos_desde si se llama justo después.
+        """
+        criterios_origen = base_datos_origen.listar_criterios(materia_origen_id)
+        mapa_criterios: dict[int, int] = {}
+        for criterio in criterios_origen:
+            nuevo_criterio = self.agregar_criterio(materia_destino_id, criterio.codigo, criterio.peso)
+            mapa_criterios[criterio.id] = nuevo_criterio.id
+        return mapa_criterios
+
+    def copiar_instrumentos_desde(
+        self,
+        base_datos_origen: "BaseDatosCurso",
+        materia_origen_id: int,
+        materia_destino_id: int,
+        mapa_criterios: dict[int, int],
+    ):
+        """Copia los instrumentos de evaluación (de 1EVA, 2EVA y 3EVA —
+        FINAL no tiene instrumentos propios) de una materia a otra: su
+        nombre, tipo, peso y nota máxima; sus pruebas con su peso (para
+        media aritmética/ponderada); y qué criterios marca cada uno, con
+        el peso de esa relación. No copia ninguna nota de alumnado.
+
+        mapa_criterios debe ser el devuelto por copiar_criterios_desde,
+        para traducir los ids de criterio de la materia origen a los
+        ids de la materia destino (son distintos aunque el código sea
+        el mismo).
+        """
+        evaluaciones_origen = {ev.nombre: ev for ev in base_datos_origen.listar_evaluaciones(materia_origen_id)}
+        evaluaciones_destino = {ev.nombre: ev for ev in self.listar_evaluaciones(materia_destino_id)}
+
+        for nombre_evaluacion in ("1EVA", "2EVA", "3EVA"):
+            evaluacion_origen = evaluaciones_origen.get(nombre_evaluacion)
+            evaluacion_destino = evaluaciones_destino.get(nombre_evaluacion)
+            if evaluacion_origen is None or evaluacion_destino is None:
+                continue
+
+            for instrumento_origen in base_datos_origen.listar_instrumentos(evaluacion_origen.id):
+                instrumento_destino = self.crear_instrumento(
+                    evaluacion_destino.id,
+                    instrumento_origen.nombre,
+                    instrumento_origen.tipo,
+                    instrumento_origen.nota_maxima,
+                )
+                # crear_instrumento ya fija el peso a 100 si es el primero
+                # de la evaluación, o a 0 si no; lo sobrescribimos para
+                # que coincida exactamente con el de origen.
+                self.actualizar_instrumento(
+                    instrumento_destino.id,
+                    instrumento_origen.nombre,
+                    instrumento_origen.peso,
+                    instrumento_origen.nota_maxima,
+                )
+
+                for prueba_origen in base_datos_origen.listar_pruebas(instrumento_origen.id):
+                    prueba_destino = self.agregar_prueba(instrumento_destino.id, prueba_origen.nombre)
+                    self.actualizar_prueba(prueba_destino.id, prueba_origen.nombre, prueba_origen.peso)
+
+                for relacion_origen in base_datos_origen.listar_criterios_de_instrumento(instrumento_origen.id):
+                    criterio_destino_id = mapa_criterios.get(relacion_origen.criterio_id)
+                    if criterio_destino_id is None:
+                        continue  # por seguridad: no debería ocurrir si se llamó antes a copiar_criterios_desde
+                    self.marcar_criterio_en_instrumento(
+                        instrumento_destino.id, criterio_destino_id, peso=relacion_origen.peso
+                    )
