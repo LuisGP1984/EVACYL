@@ -237,6 +237,52 @@ QLineEdit, QInputDialog QLineEdit {{
     border-radius: 4px;
     padding: 4px;
 }}
+
+QRadioButton, QCheckBox {{
+    spacing: 8px;
+    padding: 2px 0px;
+}}
+
+QRadioButton::indicator, QCheckBox::indicator {{
+    width: 16px;
+    height: 16px;
+    border: 2px solid {PALETA['verde_medio']};
+    background-color: {PALETA['blanco']};
+}}
+
+QRadioButton::indicator {{
+    border-radius: 9px;
+}}
+
+QCheckBox::indicator {{
+    border-radius: 3px;
+}}
+
+QRadioButton::indicator:hover, QCheckBox::indicator:hover {{
+    border: 2px solid {PALETA['verde_oscuro']};
+}}
+
+QRadioButton::indicator:checked {{
+    background-color: {PALETA['blanco']};
+    border: 2px solid {PALETA['verde_medio']};
+    /* círculo interior relleno, dibujado con un degradado radial muy
+       cerrado para simular un punto sólido bien visible en el centro */
+    background: qradialgradient(
+        cx:0.5, cy:0.5, radius:0.5, fx:0.5, fy:0.5,
+        stop:0 {PALETA['verde_medio']}, stop:0.55 {PALETA['verde_medio']},
+        stop:0.6 {PALETA['blanco']}, stop:1 {PALETA['blanco']}
+    );
+}}
+
+QCheckBox::indicator:checked {{
+    background-color: {PALETA['verde_medio']};
+    border: 2px solid {PALETA['verde_medio']};
+}}
+
+QRadioButton::indicator:disabled, QCheckBox::indicator:disabled {{
+    border: 2px solid {PALETA['gris_texto_atenuado']};
+    background-color: {PALETA['verde_muy_claro']};
+}}
 """
 
 

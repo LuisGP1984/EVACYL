@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 
 from core.database import BaseDatosCurso, Materia
 from core.respaldo import listar_copias_seguridad, restaurar_copia_seguridad
+from ui.dialogo_nueva_materia import DialogoNuevaMateria, NIVEL_CRITERIOS_E_INSTRUMENTOS
 from ui.ventana_materia import VentanaMateria
 from ui.widgets_comunes import BotonAyuda, VentanaConFondo
 
@@ -32,11 +33,12 @@ TEXTO_AYUDA_CURSO = (
     "Una <b>materia</b> agrupa todo lo necesario para evaluar una asignatura concreta de "
     "un grupo (por ejemplo, «Tecnología 1ºESO A»): su alumnado, sus criterios de "
     "evaluación, y las 4 evaluaciones (1EVA, 2EVA, 3EVA y FINAL) con sus notas.\n\n"
-    "Si impartes la misma asignatura en dos grupos distintos (1ºESO A y 1ºESO B), crea dos "
-    "materias separadas: cada una con su propio alumnado, aunque puedan compartir el mismo "
-    "currículo oficial al rellenar los criterios.\n\n"
-    "Pulsa «➕ Crear nueva materia» para empezar una, o haz doble clic en una materia de la "
-    "lista para entrar en ella."
+    "Si impartes la misma asignatura en dos grupos distintos (1ºESO A y 1ºESO B), o repites "
+    "estructura curso tras curso, al pulsar «➕ Crear nueva materia» puedes copiar los "
+    "criterios (y, si quieres, también los instrumentos de evaluación con sus pesos y "
+    "pruebas) de una materia que ya tengas hecha — de este curso académico o de cualquier "
+    "otro. La materia nueva siempre empieza sin alumnado ni notas.\n\n"
+    "Haz doble clic en una materia de la lista para entrar en ella."
 )
 
 
@@ -226,17 +228,60 @@ class VentanaCurso(VentanaConFondo):
     # -- acciones -------------------------------------------------------
 
     def crear_materia(self):
-        nombre, ok = QInputDialog.getText(
-            self, "Nueva materia", "Nombre de la materia (ej. Tecnología 1ºESO):"
-        )
-        if not ok or not nombre.strip():
+        dialogo = DialogoNuevaMateria(self.ruta_bd, self)
+        if dialogo.exec() != QDialog.DialogCode.Accepted:
             return
+
         try:
-            self.base_datos.crear_materia(nombre)
+            materia_nueva = self.base_datos.crear_materia(dialogo.nombre_materia)
         except Exception as exc:  # noqa: BLE001
             QMessageBox.warning(self, "No se pudo crear la materia", str(exc))
             return
+
+        if dialogo.copiar_desde is not None:
+            ruta_bd_origen, nombre_materia_origen = dialogo.copiar_desde
+            try:
+                self._copiar_estructura_materia(
+                    ruta_bd_origen, nombre_materia_origen, materia_nueva.id, dialogo.nivel_copia
+                )
+            except Exception as exc:  # noqa: BLE001
+                QMessageBox.warning(
+                    self,
+                    "Materia creada, pero la copia no se completó",
+                    f"La materia «{dialogo.nombre_materia}» se ha creado, pero no se pudo "
+                    f"copiar la estructura solicitada:\n{exc}",
+                )
+
         self.refrescar_lista_materias()
+
+    def _copiar_estructura_materia(
+        self, ruta_bd_origen: Path, nombre_materia_origen: str, materia_destino_id: int, nivel_copia: str
+    ):
+        """Copia criterios (y, si corresponde, instrumentos) de la
+        materia indicada en ruta_bd_origen hacia la materia ya creada
+        materia_destino_id en self.base_datos. Si ruta_bd_origen es el
+        mismo curso actual, reutiliza self.base_datos en vez de abrir
+        una segunda conexión sobre el mismo archivo.
+        """
+        mismo_curso = ruta_bd_origen == self.ruta_bd
+        base_datos_origen = self.base_datos if mismo_curso else BaseDatosCurso(ruta_bd_origen)
+        try:
+            materia_origen = next(
+                (m for m in base_datos_origen.listar_materias() if m.nombre == nombre_materia_origen), None
+            )
+            if materia_origen is None:
+                raise ValueError(f"No se ha encontrado la materia «{nombre_materia_origen}» en el curso origen.")
+
+            mapa_criterios = self.base_datos.copiar_criterios_desde(
+                base_datos_origen, materia_origen.id, materia_destino_id
+            )
+            if nivel_copia == NIVEL_CRITERIOS_E_INSTRUMENTOS:
+                self.base_datos.copiar_instrumentos_desde(
+                    base_datos_origen, materia_origen.id, materia_destino_id, mapa_criterios
+                )
+        finally:
+            if not mismo_curso:
+                base_datos_origen.cerrar()
 
     def entrar_en_materia_seleccionada(self):
         materia = self._materia_seleccionada()
