@@ -573,6 +573,12 @@ class BaseDatosCurso:
             for r in cur.fetchall()
         ]
 
+    def suma_pesos_criterios(self, materia_id: int) -> float:
+        cur = self.conexion.execute(
+            "SELECT COALESCE(SUM(peso), 0) FROM criterio WHERE materia_id = ?;", (materia_id,)
+        )
+        return cur.fetchone()[0]
+
     def agregar_criterio(self, materia_id: int, codigo: str, peso: float = 1.0) -> Criterio:
         codigo = codigo.strip()
         if not codigo:
