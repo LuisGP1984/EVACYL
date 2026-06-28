@@ -10,7 +10,11 @@ en 1EVA y otro solo en 3EVA. Por eso aquí NUNCA se avisa de "los
 criterios de la materia suman X%": esa suma global no es relevante por
 evaluación. Lo que sí se revisa en cada evaluación parcial es el peso
 de sus INSTRUMENTOS (deben sumar 100% entre ellos) y, dentro de cada
-instrumento, el peso de sus PRUEBAS (si las tiene).
+instrumento, el peso de sus PRUEBAS — pero solo cuando el instrumento es de tipo "media
+ponderada", que es el único caso donde el docente asigna realmente un
+peso a cada prueba. En "media aritmética" las pruebas pesan todas
+igual por diseño y ese campo nunca se usa, así que comprobar su suma
+ahí no tiene sentido y generaría un aviso falso.
 
 El único aviso relacionado con "criterios sin usar" vive en FINAL, y
 mira si un criterio se ha quedado sin ninguna nota en NINGUNA de las
@@ -28,7 +32,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from core.database import BaseDatosCurso, Evaluacion, Materia
+from core.database import BaseDatosCurso, Evaluacion, Materia, TIPO_MEDIA_PONDERADA
 
 SEVERIDAD_AVISO = "aviso"
 SEVERIDAD_ERROR = "error"
@@ -49,7 +53,8 @@ def revisar_salud_evaluacion(
 ) -> list[IncidenciaSalud]:
     """Incidencias de una evaluación concreta (1EVA, 2EVA o 3EVA): peso
     de los instrumentos de esa evaluación, instrumentos sin ningún
-    criterio marcado, e instrumentos con varias pruebas cuyo peso no
+    criterio marcado, e instrumentos de media ponderada con varias
+    pruebas cuyo peso no
     suma 100% entre ellas.
     """
     incidencias: list[IncidenciaSalud] = []
@@ -81,7 +86,7 @@ def revisar_salud_evaluacion(
             )
 
         pruebas = base_datos.listar_pruebas(instrumento.id)
-        if len(pruebas) > 1:
+        if instrumento.tipo == TIPO_MEDIA_PONDERADA and len(pruebas) > 1:
             suma_pruebas = base_datos.suma_pesos_pruebas(instrumento.id)
             if not _umbral_ok(suma_pruebas):
                 incidencias.append(
