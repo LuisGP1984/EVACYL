@@ -8,7 +8,7 @@ así que siempre coincide con lo que se ve en el archivo exportado.
 
 from __future__ import annotations
 
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QShowEvent
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
@@ -101,6 +101,17 @@ class PanelTrazabilidadEvaluacion(QWidget):
                     item.setBackground(COLOR_SI)
                 self.tabla.setItem(fila, col, item)
 
+    def showEvent(self, event: QShowEvent):
+        """Cada vez que este panel pasa a mostrarse en pantalla (al
+        entrar a la sub-pestaña Trazabilidad), se vuelve a leer la
+        base de datos. Esto es más fiable que depender únicamente de
+        la señal currentChanged del QTabWidget padre, que en algún
+        caso límite podría no dispararse y dejar la tabla con un
+        snapshot desactualizado de la última vez que se vio.
+        """
+        super().showEvent(event)
+        self.refrescar()
+
 
 class PanelTrazabilidadFinal(QWidget):
     """Trazabilidad criterio <-> evaluación (1EVA/2EVA/3EVA), para FINAL."""
@@ -162,3 +173,10 @@ class PanelTrazabilidadFinal(QWidget):
             fuente.setBold(True)
             item_contador.setFont(fuente)
             self.tabla.setItem(fila, col_contador, item_contador)
+
+    def showEvent(self, event: QShowEvent):
+        """Mismo motivo que en PanelTrazabilidadEvaluacion: refrescar
+        al mostrarse es más fiable que depender solo de currentChanged.
+        """
+        super().showEvent(event)
+        self.refrescar()
