@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QInputDialog,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMessageBox,
@@ -25,7 +26,12 @@ from PySide6.QtWidgets import (
 
 from core.database import BaseDatosCurso, Materia
 from core.respaldo import listar_copias_seguridad, restaurar_copia_seguridad
-from ui.dialogo_nueva_materia import DialogoNuevaMateria, NIVEL_CRITERIOS_E_INSTRUMENTOS
+from ui.dialogo_nueva_materia import (
+    NIVEL_CRITERIOS_E_INSTRUMENTOS,
+    NOMBRE_ARCHIVO_BD,
+    DialogoNuevaMateria,
+    _cursos_disponibles,
+)
 from ui.ventana_materia import VentanaMateria
 from ui.widgets_comunes import BotonAyuda, VentanaConFondo
 
@@ -119,6 +125,7 @@ class VentanaCurso(VentanaConFondo):
         super().__init__()
         self.base_datos = base_datos
         self.ruta_bd = ruta_bd
+        self.carpeta_docente = ruta_bd.parent.parent
         self._accion_ir_a_inicio = None
 
         self.setWindowTitle(f"Curso — {ruta_bd.parent.name}")
@@ -163,9 +170,26 @@ class VentanaCurso(VentanaConFondo):
         fila_titulo.addWidget(BotonAyuda("Ayuda — Materias", TEXTO_AYUDA_CURSO))
         layout.addLayout(fila_titulo)
 
+        self.campo_busqueda = QLineEdit()
+        self.campo_busqueda.setPlaceholderText("🔎 Buscar materia por nombre… (también busca en otros cursos académicos)")
+        self.campo_busqueda.setMinimumHeight(32)
+        self.campo_busqueda.textChanged.connect(self._al_cambiar_busqueda)
+        layout.addWidget(self.campo_busqueda)
+
         self.lista_materias = QListWidget()
         self.lista_materias.itemDoubleClicked.connect(self.entrar_en_materia_seleccionada)
         layout.addWidget(self.lista_materias)
+
+        self.etiqueta_otros_cursos = QLabel("")
+        self.etiqueta_otros_cursos.setStyleSheet("color: #8A7A6E; font-size: 12px;")
+        self.etiqueta_otros_cursos.setVisible(False)
+        layout.addWidget(self.etiqueta_otros_cursos)
+
+        self.lista_otros_cursos = QListWidget()
+        self.lista_otros_cursos.setMaximumHeight(120)
+        self.lista_otros_cursos.itemDoubleClicked.connect(self._abrir_resultado_de_otro_curso)
+        self.lista_otros_cursos.setVisible(False)
+        layout.addWidget(self.lista_otros_cursos)
 
         fila_botones = QWidget()
         layout_botones = QVBoxLayout(fila_botones)
@@ -212,7 +236,67 @@ class VentanaCurso(VentanaConFondo):
         for materia in self.base_datos.listar_materias():
             item = QListWidgetItem(materia.nombre)
             item.setData(1, materia.id)
+            item.setData(2, materia.nombre)  # texto puro para comparar en la búsqueda
             self.lista_materias.addItem(item)
+
+    def _al_cambiar_busqueda(self, texto: str):
+        texto_normalizado = texto.strip().lower()
+
+        # Filtra la lista de materias de ESTE curso en tiempo real, sin
+        # tocar la base de datos: solo oculta/muestra filas ya cargadas.
+        for fila in range(self.lista_materias.count()):
+            item = self.lista_materias.item(fila)
+            nombre_materia = (item.data(2) or "").lower()
+            item.setHidden(bool(texto_normalizado) and texto_normalizado not in nombre_materia)
+
+        if not texto_normalizado:
+            self.lista_otros_cursos.clear()
+            self.lista_otros_cursos.setVisible(False)
+            self.etiqueta_otros_cursos.setVisible(False)
+            return
+
+        # Buscar también en los demás cursos académicos (abre cada
+        # curso.db solo para consultar, sin mantenerlo abierto).
+        self.lista_otros_cursos.clear()
+        encontrados = []
+        for carpeta_curso in _cursos_disponibles(self.carpeta_docente):
+            ruta_bd_otro_curso = carpeta_curso / NOMBRE_ARCHIVO_BD
+            if ruta_bd_otro_curso == self.ruta_bd:
+                continue  # el curso actual ya se busca arriba, en la lista principal
+            try:
+                base_datos_otro_curso = BaseDatosCurso(ruta_bd_otro_curso)
+                for materia in base_datos_otro_curso.listar_materias():
+                    if texto_normalizado in materia.nombre.lower():
+                        encontrados.append((carpeta_curso.name, ruta_bd_otro_curso, materia.nombre))
+                base_datos_otro_curso.cerrar()
+            except Exception:  # noqa: BLE001
+                continue  # un curso.db dañado o ilegible no debe romper la búsqueda del resto
+
+        if encontrados:
+            self.etiqueta_otros_cursos.setText("📂 Encontrado también en otros cursos académicos (doble clic para abrir):")
+            self.etiqueta_otros_cursos.setVisible(True)
+            self.lista_otros_cursos.setVisible(True)
+            for nombre_curso, ruta_bd_otro_curso, nombre_materia in encontrados:
+                item = QListWidgetItem(f"{nombre_materia}  —  curso {nombre_curso}")
+                item.setData(1, str(ruta_bd_otro_curso))
+                item.setData(2, nombre_materia)
+                self.lista_otros_cursos.addItem(item)
+        else:
+            self.etiqueta_otros_cursos.setVisible(False)
+            self.lista_otros_cursos.setVisible(False)
+
+    def _abrir_resultado_de_otro_curso(self, item: QListWidgetItem):
+        ruta_bd_otro_curso = Path(item.data(1))
+        try:
+            base_datos_otro_curso = BaseDatosCurso(ruta_bd_otro_curso)
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.warning(self, "No se pudo abrir ese curso", str(exc))
+            return
+        ventana_otro_curso = VentanaCurso(base_datos_otro_curso, ruta_bd_otro_curso)
+        ventana_otro_curso.conectar_ir_a_inicio(self._accion_ir_a_inicio)
+        ventana_otro_curso.showMaximized()
+        ventana_otro_curso.campo_busqueda.setText(item.data(2))
+        self._ventana_otro_curso_abierta = ventana_otro_curso  # evita que el GC la cierre
 
     def _materia_seleccionada(self) -> Materia | None:
         item = self.lista_materias.currentItem()

@@ -40,11 +40,12 @@ TEXTO_AYUDA = (
     "una sola vez para toda ella: los heredan 1EVA, 2EVA, 3EVA y FINAL.\n\n"
     "Tres formas de rellenarlos:\n"
     "• «📚 Rellenar desde currículo oficial…»: eliges etapa, curso y materia/área (o "
-    "ámbito y módulo, en el caso de ESPA), y se rellenan automáticamente los criterios "
-    "oficiales de Castilla y León, con peso 1 (ajustable después). El currículo está "
-    "extraído del Anexo III de los Decretos 38/2022 (Primaria), 39/2022 (Secundaria) y "
-    "40/2022 (Bachillerato), y del Decreto 10/2025 (Educación Secundaria para Personas "
-    "Adultas).\n"
+    "ámbito y módulo, en el caso de ESPA, o ámbito en el caso de Diversificación), y se "
+    "rellenan automáticamente los criterios oficiales de Castilla y León, con peso 1 "
+    "(ajustable después). El currículo está extraído del Anexo III de los Decretos "
+    "38/2022 (Primaria), 39/2022 (Secundaria) y 40/2022 (Bachillerato), del Decreto "
+    "10/2025 (Educación Secundaria para Personas Adultas) y de la ORDEN EDU/1332/2023 "
+    "(Diversificación Curricular).\n"
     "• A mano, con «➕ Añadir criterio».\n"
     "• Pegando desde Excel (Ctrl+V) o importando un archivo .xlsx — usa «⬇️ Descargar "
     "plantilla de ejemplo…» si no conoces el formato esperado.\n\n"
@@ -129,6 +130,16 @@ class PanelCriterios(QWidget):
         self.boton_deshacer.clicked.connect(self.deshacer_ultima_eliminacion)
         fila_botones.addWidget(self.boton_deshacer)
 
+        # Último cambio de PESO de un criterio (distinto del deshacer de
+        # eliminación de arriba): permite revertir un error de tecleo
+        # en el peso sin tener que recordar el valor anterior.
+        self._ultimo_cambio_peso = None  # (criterio_id, peso_anterior) | None
+        self.boton_deshacer_peso = QPushButton("↩️ Deshacer último cambio de peso")
+        self.boton_deshacer_peso.setObjectName("botonSecundario")
+        self.boton_deshacer_peso.setVisible(False)
+        self.boton_deshacer_peso.clicked.connect(self._deshacer_ultimo_cambio_peso)
+        fila_botones.addWidget(self.boton_deshacer_peso)
+
         fila_botones.addStretch()
         layout.addLayout(fila_botones)
 
@@ -164,10 +175,32 @@ class PanelCriterios(QWidget):
         except ValueError:
             QMessageBox.warning(self, "Peso no válido", "El peso debe ser un número. Se usará 1.")
             peso = 1.0
+
+        criterio_actual = next(
+            (c for c in self.base_datos.listar_criterios(self.materia.id) if c.id == criterio_id), None
+        )
+        if criterio_actual is not None and peso != criterio_actual.peso:
+            self._ultimo_cambio_peso = (criterio_id, criterio_actual.peso)
+            self.boton_deshacer_peso.setText(f"↩️ Deshacer cambio de peso de «{criterio_actual.codigo}»")
+            self.boton_deshacer_peso.setVisible(True)
+
         try:
             self.base_datos.actualizar_criterio(criterio_id, codigo, peso)
         except ValueError as exc:
             QMessageBox.warning(self, "Dato no válido", str(exc))
+        self.refrescar()
+
+    def _deshacer_ultimo_cambio_peso(self):
+        if self._ultimo_cambio_peso is None:
+            return
+        criterio_id, peso_anterior = self._ultimo_cambio_peso
+        criterio_actual = next(
+            (c for c in self.base_datos.listar_criterios(self.materia.id) if c.id == criterio_id), None
+        )
+        if criterio_actual is not None:
+            self.base_datos.actualizar_criterio(criterio_id, criterio_actual.codigo, peso_anterior)
+        self._ultimo_cambio_peso = None
+        self.boton_deshacer_peso.setVisible(False)
         self.refrescar()
 
     def anadir_criterio(self):
@@ -262,8 +295,6 @@ class PanelCriterios(QWidget):
         dialogo = DialogoAsistenteCurricular(self)
         if dialogo.exec() != QDialog.DialogCode.Accepted:
             return
-        if dialogo.es_opcion_manual():
-            return  # el docente ha elegido introducirlos él mismo: no hay nada que rellenar
 
         etapa, curso, materia, codigos = dialogo.resultado()
         if not codigos:

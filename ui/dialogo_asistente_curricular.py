@@ -3,12 +3,18 @@ Asistente para rellenar automáticamente los criterios de evaluación de
 una materia a partir del currículo oficial LOMLOE de Castilla y León.
 
 Flujo:
-  1. El docente elige la etapa (Primaria, Secundaria, Bachillerato) o
-     "Manual" (introducir los criterios él mismo, como hasta ahora).
-  2. Si elige una etapa con datos disponibles, se le pide el curso.
-  3. Después, la materia/área dentro de ese curso.
+  1. El docente elige la etapa (Primaria, Secundaria, Bachillerato,
+     ESPA, Diversificación).
+  2. Se le pide el curso.
+  3. Después, la materia/área (o ámbito) dentro de ese curso.
   4. Al confirmar, se devuelven los códigos de criterio para que quien
      use este diálogo los inserte en la base de datos.
+
+No incluye una opción "manual": si el docente no quiere usar el
+asistente para una materia en concreto, simplemente cancela este
+diálogo y sigue añadiendo los criterios uno a uno desde la propia
+pestaña de Criterios, donde ya existe esa opción — tenerla aquí
+también sería redundante.
 """
 
 from __future__ import annotations
@@ -33,13 +39,12 @@ from core.curriculo import (
     referencia_normativa,
 )
 
-OPCION_MANUAL = "MANUAL"
-
 
 class DialogoAsistenteCurricular(QDialog):
     """Diálogo de selección etapa -> curso -> materia. Tras aceptar,
-    `resultado()` devuelve (etapa, curso, materia, lista_codigos) o
-    (None, None, None, []) si se eligió la opción manual.
+    `resultado()` devuelve (etapa, curso, materia, lista_codigos).
+    Si el docente cancela el diálogo, quien lo usa simplemente no debe
+    hacer nada (no hay resultado "manual" que gestionar aquí).
     """
 
     def __init__(self, parent=None):
@@ -52,7 +57,7 @@ class DialogoAsistenteCurricular(QDialog):
         ayuda = QLabel(
             "Elige tu etapa educativa y la app rellenará automáticamente los "
             "criterios de evaluación oficiales de Castilla y León para la materia "
-            "que indiques. También puedes optar por introducirlos tú mismo/a."
+            "que indiques."
         )
         ayuda.setWordWrap(True)
         layout.addWidget(ayuda)
@@ -65,8 +70,7 @@ class DialogoAsistenteCurricular(QDialog):
 
         self.combo_etapa = QComboBox()
         self.combo_etapa.setMinimumHeight(ALTURA_MINIMA_COMBO)
-        self.combo_etapa.addItem("Manual (introducir yo los criterios)", OPCION_MANUAL)
-        for etapa in ["PRIMARIA", "SECUNDARIA", "BACHILLERATO", "ESPA"]:
+        for etapa in ["PRIMARIA", "SECUNDARIA", "BACHILLERATO", "ESPA", "DIVERSIFICACION"]:
             disponible = etapa in etapas_disponibles()
             etiqueta = ETIQUETAS_ETAPA[etapa]
             if not disponible:
@@ -106,7 +110,7 @@ class DialogoAsistenteCurricular(QDialog):
         botones.rejected.connect(self.reject)
         layout.addWidget(botones)
 
-        self._etapa_seleccionada = OPCION_MANUAL
+        self._etapa_seleccionada = self.combo_etapa.itemData(0)
         self._curso_seleccionado = None
         self._materia_seleccionada = None
         self._codigos_resultado: list[str] = []
@@ -119,31 +123,27 @@ class DialogoAsistenteCurricular(QDialog):
         etapa = self.combo_etapa.currentData()
         self._etapa_seleccionada = etapa
 
-        es_manual = etapa == OPCION_MANUAL
-        self.combo_curso.setEnabled(not es_manual)
-        self.combo_materia.setEnabled(not es_manual)
-
-        etiqueta_nivel1, etiqueta_nivel2 = etiquetas_niveles(etapa) if not es_manual else ("Curso", "Materia / Área")
+        etiqueta_nivel1, etiqueta_nivel2 = etiquetas_niveles(etapa)
         self.etiqueta_nivel1.setText(f"{etiqueta_nivel1}:")
         self.etiqueta_nivel2.setText(f"{etiqueta_nivel2}:")
 
         self.combo_curso.clear()
         self.combo_materia.clear()
         self.etiqueta_resumen.setText("")
-        self.etiqueta_normativa.setText("" if es_manual else f"📖 Fuente: {referencia_normativa(etapa)}")
-
-        if es_manual:
-            return
+        self.etiqueta_normativa.setText(f"📖 Fuente: {referencia_normativa(etapa)}")
 
         if etapa not in etapas_disponibles():
             self.etiqueta_resumen.setText(
                 "Esta etapa todavía no tiene el currículo cargado en la aplicación. "
-                "Por ahora, usa la opción Manual para esta materia."
+                "Si quieres usar esta materia, cancela este asistente y añade los "
+                "criterios uno a uno desde el botón «➕ Añadir criterio»."
             )
             self.combo_curso.setEnabled(False)
             self.combo_materia.setEnabled(False)
             return
 
+        self.combo_curso.setEnabled(True)
+        self.combo_materia.setEnabled(True)
         for curso in cursos_de_etapa(etapa):
             self.combo_curso.addItem(curso, curso)
 
@@ -151,7 +151,7 @@ class DialogoAsistenteCurricular(QDialog):
         etapa = self._etapa_seleccionada
         curso = self.combo_curso.currentData()
         self.combo_materia.clear()
-        if etapa == OPCION_MANUAL or curso is None:
+        if curso is None:
             return
         for materia in materias_de_curso(etapa, curso):
             self.combo_materia.addItem(materia, materia)
@@ -161,7 +161,7 @@ class DialogoAsistenteCurricular(QDialog):
         etapa = self._etapa_seleccionada
         curso = self.combo_curso.currentData()
         materia = self.combo_materia.currentData()
-        if etapa == OPCION_MANUAL or not curso or not materia:
+        if not curso or not materia:
             self.etiqueta_resumen.setText("")
             return
         codigos = criterios_de_materia(etapa, curso, materia)
@@ -179,11 +179,6 @@ class DialogoAsistenteCurricular(QDialog):
 
     def _al_aceptar(self):
         etapa = self._etapa_seleccionada
-        if etapa == OPCION_MANUAL:
-            self._codigos_resultado = []
-            self.accept()
-            return
-
         curso = self.combo_curso.currentData()
         materia = self.combo_materia.currentData()
         if not curso or not materia:
@@ -205,12 +200,7 @@ class DialogoAsistenteCurricular(QDialog):
 
     # -- resultado -------------------------------------------------------
 
-    def es_opcion_manual(self) -> bool:
-        return self._etapa_seleccionada == OPCION_MANUAL
-
     def resultado(self) -> tuple[str | None, str | None, str | None, list[str]]:
-        if self.es_opcion_manual():
-            return None, None, None, []
         return (
             self._etapa_seleccionada,
             self._curso_seleccionado,
