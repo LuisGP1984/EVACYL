@@ -22,24 +22,27 @@ from core.rutas_app import ruta_raiz_proyecto
 RUTA_ARCHIVO_CURRICULO = ruta_raiz_proyecto() / "datos_curriculares" / "curriculo_lomloe_cyl.json"
 
 # Etiquetas legibles para las etapas que YA están disponibles en los datos.
-ETAPAS_DISPONIBLES = ["PRIMARIA", "SECUNDARIA", "BACHILLERATO", "ESPA"]
+ETAPAS_DISPONIBLES = ["PRIMARIA", "SECUNDARIA", "BACHILLERATO", "ESPA", "DIVERSIFICACION"]
 
 ETIQUETAS_ETAPA = {
     "PRIMARIA": "Educación Primaria",
     "SECUNDARIA": "Educación Secundaria Obligatoria (ESO)",
     "BACHILLERATO": "Bachillerato",
     "ESPA": "Educación Secundaria para Personas Adultas (ESPA)",
+    "DIVERSIFICACION": "Programa de Diversificación Curricular",
 }
 
 # Algunas etapas usan una jerarquía con otros nombres (ESPA se organiza
-# en Ámbito -> Módulo, en vez de Curso -> Materia/Área). Esto solo
-# afecta a las etiquetas que ve el docente en el asistente; los datos
-# se guardan exactamente con la misma forma {etapa: {nivel1: {nivel2: [...]}}}.
+# en Ámbito -> Módulo, y Diversificación en Curso -> Ámbito, en vez de
+# Curso -> Materia/Área). Esto solo afecta a las etiquetas que ve el
+# docente en el asistente; los datos se guardan exactamente con la
+# misma forma {etapa: {nivel1: {nivel2: [...]}}}.
 ETIQUETAS_NIVELES = {
     "PRIMARIA": ("Curso", "Materia / Área"),
     "SECUNDARIA": ("Curso", "Materia / Área"),
     "BACHILLERATO": ("Curso", "Materia / Área"),
     "ESPA": ("Ámbito", "Módulo"),
+    "DIVERSIFICACION": ("Curso", "Ámbito"),
 }
 
 # Referencia normativa oficial de la que se extrae el currículo de cada
@@ -63,6 +66,11 @@ REFERENCIA_NORMATIVA_ETAPA = {
         "Decreto 10/2025, de 31 de julio, por el que se establecen la ordenación y el "
         "currículo de la enseñanza secundaria para personas adultas en la Comunidad de "
         "Castilla y León."
+    ),
+    "DIVERSIFICACION": (
+        "ORDEN EDU/1332/2023, de 14 de noviembre, por la que se regulan los programas "
+        "de diversificación curricular de la educación secundaria obligatoria en la "
+        "Comunidad de Castilla y León."
     ),
 }
 
