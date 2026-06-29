@@ -645,11 +645,31 @@ class BaseDatosCurso:
         codigo = codigo.strip()
         if not codigo:
             raise ValueError("El código del criterio no puede estar vacío.")
+
+        cur = self.conexion.execute("SELECT peso FROM criterio WHERE id = ?;", (criterio_id,))
+        fila = cur.fetchone()
+        peso_anterior = fila[0] if fila else None
+
         self.conexion.execute(
             "UPDATE criterio SET codigo = ?, peso = ? WHERE id = ?;",
             (codigo, peso, criterio_id),
         )
         self.conexion.commit()
+
+        # Si el peso ha cambiado, hay que recalcular el peso de este
+        # criterio en TODOS los instrumentos donde ya estuviera marcado
+        # (en cualquier evaluación): ese peso se calcula a partir del
+        # peso del criterio en la materia, así que si este cambia,
+        # el recalculado de cada instrumento queda desactualizado hasta
+        # que se vuelva a marcar/desmarcar algo en ese instrumento —
+        # forzar el recálculo aquí evita ese desajuste silencioso.
+        if peso_anterior is not None and peso_anterior != peso:
+            cur = self.conexion.execute(
+                "SELECT DISTINCT instrumento_id FROM instrumento_criterio WHERE criterio_id = ?;",
+                (criterio_id,),
+            )
+            for (instrumento_id,) in cur.fetchall():
+                self.recalcular_pesos_criterios_de_instrumento(instrumento_id)
 
     def eliminar_criterio(self, criterio_id: int):
         # Antes de borrar, identificamos qué instrumentos tenían este
