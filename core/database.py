@@ -46,6 +46,7 @@ ORDEN_ALTA_POR_EVALUACION = {"1EVA": 1, "2EVA": 2, "3EVA": 3, "FINAL": 3}
 class Materia:
     id: int
     nombre: str
+    modo_calculo_final: str = "CONTINUA"  # CONTINUA | MEDIA | PORCENTUAL | PERSONALIZADO
 
 
 @dataclass
@@ -72,6 +73,7 @@ class Criterio:
     codigo: str  # ej. "1.1"
     peso: float
     orden: int
+    modo_calculo_final: str = "HEREDADO"  # HEREDADO | CONTINUA | MEDIA | PORCENTUAL
 
 
 # Tipos posibles de un instrumento de evaluación.
@@ -262,18 +264,45 @@ class BaseDatosCurso:
         primero si la columna ya existe antes de intentar añadirla.
         """
         cur = self.conexion.execute("PRAGMA table_info(instrumento_criterio);")
-        columnas_existentes = {fila[1] for fila in cur.fetchall()}
-        if "peso_manual" not in columnas_existentes:
+        columnas_ic = {fila[1] for fila in cur.fetchall()}
+        if "peso_manual" not in columnas_ic:
             self.conexion.execute(
                 "ALTER TABLE instrumento_criterio ADD COLUMN peso_manual INTEGER NOT NULL DEFAULT 0;"
             )
             self.conexion.commit()
 
-    # -- materias -------------------------------------------------------
+        cur = self.conexion.execute("PRAGMA table_info(materia);")
+        columnas_materia = {fila[1] for fila in cur.fetchall()}
+        if "modo_calculo_final" not in columnas_materia:
+            self.conexion.execute(
+                "ALTER TABLE materia ADD COLUMN modo_calculo_final TEXT NOT NULL DEFAULT 'CONTINUA';"
+            )
+            self.conexion.commit()
+
+        cur = self.conexion.execute("PRAGMA table_info(criterio);")
+        columnas_criterio = {fila[1] for fila in cur.fetchall()}
+        if "modo_calculo_final" not in columnas_criterio:
+            self.conexion.execute(
+                "ALTER TABLE criterio ADD COLUMN modo_calculo_final TEXT NOT NULL DEFAULT 'HEREDADO';"
+            )
+            self.conexion.commit()
+
+    # -- modos de cálculo de la nota final de curso ---------------------------
+
+    MODO_CONTINUA = "CONTINUA"
+    MODO_MEDIA = "MEDIA"
+    MODO_PORCENTUAL = "PORCENTUAL"
+    MODO_PERSONALIZADO = "PERSONALIZADO"
+    MODO_HEREDADO = "HEREDADO"  # solo para criterios: usar el modo de la materia
+
+    MODOS_VALIDOS_MATERIA = [MODO_CONTINUA, MODO_MEDIA, MODO_PORCENTUAL, MODO_PERSONALIZADO]
+    MODOS_VALIDOS_CRITERIO = [MODO_CONTINUA, MODO_MEDIA, MODO_PORCENTUAL, MODO_HEREDADO]
+
+
 
     def listar_materias(self) -> list[Materia]:
-        cur = self.conexion.execute("SELECT id, nombre FROM materia ORDER BY nombre;")
-        return [Materia(id=r[0], nombre=r[1]) for r in cur.fetchall()]
+        cur = self.conexion.execute("SELECT id, nombre, modo_calculo_final FROM materia ORDER BY nombre;")
+        return [Materia(id=r[0], nombre=r[1], modo_calculo_final=r[2]) for r in cur.fetchall()]
 
     def crear_materia(self, nombre: str) -> Materia:
         nombre = nombre.strip()
@@ -579,14 +608,40 @@ class BaseDatosCurso:
 
     def listar_criterios(self, materia_id: int) -> list[Criterio]:
         cur = self.conexion.execute(
-            """SELECT id, materia_id, codigo, peso, orden
+            """SELECT id, materia_id, codigo, peso, orden, modo_calculo_final
                FROM criterio WHERE materia_id = ? ORDER BY orden;""",
             (materia_id,),
         )
         return [
-            Criterio(id=r[0], materia_id=r[1], codigo=r[2], peso=r[3], orden=r[4])
+            Criterio(id=r[0], materia_id=r[1], codigo=r[2], peso=r[3], orden=r[4], modo_calculo_final=r[5])
             for r in cur.fetchall()
         ]
+
+    def obtener_modo_calculo_final(self, materia_id: int) -> str:
+        """Devuelve el modo de cálculo de la nota final de esta materia."""
+        cur = self.conexion.execute(
+            "SELECT modo_calculo_final FROM materia WHERE id = ?;", (materia_id,)
+        )
+        fila = cur.fetchone()
+        return fila[0] if fila else self.MODO_CONTINUA
+
+    def actualizar_modo_calculo_final(self, materia_id: int, modo: str):
+        """Guarda el modo de cálculo de la nota final de esta materia."""
+        if modo not in self.MODOS_VALIDOS_MATERIA:
+            raise ValueError(f"Modo no reconocido: {modo}")
+        self.conexion.execute(
+            "UPDATE materia SET modo_calculo_final = ? WHERE id = ?;", (modo, materia_id)
+        )
+        self.conexion.commit()
+
+    def actualizar_modo_calculo_criterio(self, criterio_id: int, modo: str):
+        """Guarda el modo individual de un criterio (solo relevante en modo PERSONALIZADO)."""
+        if modo not in self.MODOS_VALIDOS_CRITERIO:
+            raise ValueError(f"Modo no reconocido para criterio: {modo}")
+        self.conexion.execute(
+            "UPDATE criterio SET modo_calculo_final = ? WHERE id = ?;", (modo, criterio_id)
+        )
+        self.conexion.commit()
 
     def suma_pesos_criterios(self, materia_id: int) -> float:
         cur = self.conexion.execute(
@@ -1231,37 +1286,85 @@ class BaseDatosCurso:
 
     def calcular_notas_criterios_final(self, materia_id: int) -> dict[tuple[int, int], float | None]:
         """Devuelve {(criterio_id, alumno_id): nota_0_10 o None} para FINAL,
-        agregando las notas de criterio de 1EVA, 2EVA y 3EVA.
+        combinando las notas de 1EVA/2EVA/3EVA según el modo de cálculo
+        configurado para esta materia (y, en modo PERSONALIZADO, para cada
+        criterio individualmente).
+
+        Modos:
+          CONTINUA: pesos exponenciales (1EVA=1, 2EVA=1000, 3EVA=1000000),
+            de forma que la evaluación más reciente con nota prácticamente
+            determina la nota final — el docente "no mira atrás".
+          MEDIA: media aritmética entre las evaluaciones donde ese criterio
+            tiene nota para ese alumno, sin importar cuántas sean ni cuáles.
+          PORCENTUAL: el docente asigna pesos a 1EVA/2EVA/3EVA; si falta
+            nota en alguna, se redistribuye dinámicamente entre las que sí
+            la tienen (igual que el mecanismo actual, pero usando los pesos
+            definidos por el docente en vez de exponenciales).
+          PERSONALIZADO: cada criterio puede tener su propio modo (CONTINUA,
+            MEDIA o PORCENTUAL); si un criterio tiene HEREDADO, usa el modo
+            general de la materia (que en PERSONALIZADO no tiene sentido
+            porque el modo general ES personalizado, así que en ese caso
+            se usa MEDIA como valor seguro por defecto).
         """
         criterios = self.listar_criterios(materia_id)
         alumnos = self.listar_alumnos(materia_id)
-        pesos_evaluaciones = self.obtener_pesos_evaluaciones_final(materia_id)
+        modo_materia = self.obtener_modo_calculo_final(materia_id)
+        pesos_porcentuales = self.obtener_pesos_evaluaciones_final(materia_id)
 
         evaluaciones_por_nombre = {
             ev.nombre: ev for ev in self.listar_evaluaciones(materia_id)
             if ev.nombre in self.NOMBRES_EVALUACIONES_PARA_FINAL
         }
-        notas_por_evaluacion = {
+        notas_por_evaluacion: dict[str, dict[tuple[int, int], float | None]] = {
             nombre: self.calcular_notas_criterios_evaluacion(ev.id, materia_id)
             for nombre, ev in evaluaciones_por_nombre.items()
         }
 
+        # Pesos para el modo CONTINUA: 1EVA=1, 2EVA=1000, 3EVA=1000000
+        PESOS_CONTINUA = {"1EVA": 1.0, "2EVA": 1_000.0, "3EVA": 1_000_000.0}
+
+        def _calcular_para_modo(modo_efectivo: str, criterio_id: int, alumno_id: int) -> float | None:
+            """Calcula la nota de un criterio para un alumno según el modo dado."""
+            if modo_efectivo == self.MODO_CONTINUA:
+                pesos = PESOS_CONTINUA
+            elif modo_efectivo == self.MODO_MEDIA:
+                pesos = {nombre: 1.0 for nombre in self.NOMBRES_EVALUACIONES_PARA_FINAL}
+            else:  # PORCENTUAL
+                pesos = pesos_porcentuales
+
+            suma_pesos = 0.0
+            suma_ponderada = 0.0
+            for nombre_eval, notas in notas_por_evaluacion.items():
+                valor = notas.get((criterio_id, alumno_id))
+                if valor is None:
+                    continue
+                peso = pesos[nombre_eval]
+                suma_pesos += peso
+                suma_ponderada += valor * peso
+
+            return None if suma_pesos == 0 else round(suma_ponderada / suma_pesos, 2)
+
         resultado: dict[tuple[int, int], float | None] = {}
         for criterio in criterios:
-            for alumno in alumnos:
-                suma_pesos = 0.0
-                suma_ponderada = 0.0
-                for nombre_eval, notas_criterio_eval in notas_por_evaluacion.items():
-                    valor = notas_criterio_eval.get((criterio.id, alumno.id))
-                    if valor is None:
-                        continue
-                    peso = pesos_evaluaciones[nombre_eval]
-                    suma_pesos += peso
-                    suma_ponderada += valor * peso
-                if suma_pesos == 0:
-                    resultado[(criterio.id, alumno.id)] = None
+            # Determinar el modo efectivo para este criterio
+            if modo_materia == self.MODO_PERSONALIZADO:
+                modo_criterio = criterio.modo_calculo_final
+                if modo_criterio == self.MODO_HEREDADO:
+                    # En modo PERSONALIZADO, HEREDADO no tiene sentido semántico
+                    # (el modo de la materia ES personalizado). Usamos MEDIA como
+                    # valor seguro: es el modo más neutral y predecible.
+                    modo_efectivo = self.MODO_MEDIA
                 else:
-                    resultado[(criterio.id, alumno.id)] = round(suma_ponderada / suma_pesos, 2)
+                    modo_efectivo = modo_criterio
+            else:
+                # Modos globales: todos los criterios usan el mismo modo
+                modo_efectivo = modo_materia
+
+            for alumno in alumnos:
+                resultado[(criterio.id, alumno.id)] = _calcular_para_modo(
+                    modo_efectivo, criterio.id, alumno.id
+                )
+
         return resultado
 
     def calcular_notas_materia_final(self, materia_id: int) -> dict[int, float | None]:
