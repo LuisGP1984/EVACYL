@@ -35,6 +35,7 @@ from core.database import (
     TIPO_MANUAL,
     TIPO_MEDIA_ARITMETICA,
     TIPO_MEDIA_PONDERADA,
+    TIPO_RUBRICA,
     TIPOS_INSTRUMENTO,
 )
 from ui.panel_detalle_instrumento import PanelDetalleInstrumento
@@ -44,6 +45,7 @@ ETIQUETAS_TIPO = {
     TIPO_MEDIA_ARITMETICA: "Varias pruebas — media aritmética",
     TIPO_MEDIA_PONDERADA: "Varias pruebas — media ponderada",
     TIPO_EXAMEN: "Examen",
+    TIPO_RUBRICA: "Rúbrica",
 }
 
 ICONOS_TIPO = {
@@ -51,6 +53,7 @@ ICONOS_TIPO = {
     TIPO_MEDIA_ARITMETICA: "📐",
     TIPO_MEDIA_PONDERADA: "⚖️",
     TIPO_EXAMEN: "📄",
+    TIPO_RUBRICA: "🏆",
 }
 
 DESCRIPCIONES_TIPO = {
@@ -62,6 +65,9 @@ DESCRIPCIONES_TIPO = {
     "(deben sumar 100% entre todas). Útil cuando unas pruebas valen más que otras.",
     TIPO_EXAMEN: "Introduces la nota de un examen sobre la puntuación máxima que tú indiques "
     "(10, 8, 9...) y la app la reescala automáticamente a la escala 0-10.",
+    TIPO_RUBRICA: "Defines niveles de logro (Excelente, Notable...) con su nota numérica, "
+    "indicadores opcionales por criterio, y grupos de alumnos. La calificación de cada "
+    "grupo se propaga automáticamente a sus miembros, con ajuste individual si lo necesitas.",
 }
 
 
@@ -193,11 +199,36 @@ class PanelInstrumentos(QWidget):
         self.boton_deshacer.clicked.connect(self.deshacer_ultima_eliminacion)
         fila_botones.addWidget(self.boton_deshacer)
 
+        # Último cambio de PESO de un instrumento (distinto del deshacer
+        # de eliminación de arriba).
+        self._ultimo_cambio_peso = None  # (instrumento_id, peso_anterior) | None
+        self.boton_deshacer_peso = QPushButton("↩️ Deshacer último cambio de peso")
+        self.boton_deshacer_peso.setObjectName("botonSecundario")
+        self.boton_deshacer_peso.setVisible(False)
+        self.boton_deshacer_peso.clicked.connect(self._deshacer_ultimo_cambio_peso)
+        fila_botones.addWidget(self.boton_deshacer_peso)
+
         fila_botones.addStretch()
         layout.addLayout(fila_botones)
 
         self.apilado.addWidget(self.pagina_lista)
 
+        self.refrescar()
+
+    def _deshacer_ultimo_cambio_peso(self):
+        if self._ultimo_cambio_peso is None:
+            return
+        instrumento_id, peso_anterior = self._ultimo_cambio_peso
+        instrumento_actual = next(
+            (i for i in self.base_datos.listar_instrumentos(self.evaluacion.id) if i.id == instrumento_id),
+            None,
+        )
+        if instrumento_actual is not None:
+            self.base_datos.actualizar_instrumento(
+                instrumento_id, instrumento_actual.nombre, peso_anterior, instrumento_actual.nota_maxima
+            )
+        self._ultimo_cambio_peso = None
+        self.boton_deshacer_peso.setVisible(False)
         self.refrescar()
 
     # -- lista ------------------------------------------------------------
@@ -259,6 +290,11 @@ class PanelInstrumentos(QWidget):
         except ValueError:
             QMessageBox.warning(self, "Peso no válido", "El peso debe ser un número. Se usará 0.")
             peso = 0.0
+
+        if peso != instrumento.peso:
+            self._ultimo_cambio_peso = (instrumento_id, instrumento.peso)
+            self.boton_deshacer_peso.setText(f"↩️ Deshacer cambio de peso de «{instrumento.nombre}»")
+            self.boton_deshacer_peso.setVisible(True)
 
         try:
             self.base_datos.actualizar_instrumento(instrumento_id, nombre, peso, instrumento.nota_maxima)

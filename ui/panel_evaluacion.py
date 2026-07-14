@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QShowEvent
 from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
@@ -37,10 +37,12 @@ from PySide6.QtWidgets import (
 from core.calificacion import calificacion_cualitativa, color_hex_nota
 from core.database import BaseDatosCurso, Evaluacion, Materia
 from core.exportacion import exportar_evaluacion
+from core.salud_materia import revisar_salud_evaluacion
 from ui.dialogo_informes import DialogoGenerarInformes, generar_informe_evaluacion_individual
 from ui.estilos import COLOR_COLUMNA_IDENTIDAD
 from ui.panel_instrumentos import PanelInstrumentos
 from ui.panel_estadisticas import PanelEstadisticas
+from ui.panel_salud_evaluacion import PanelSaludEvaluacion
 from ui.panel_trazabilidad import PanelTrazabilidadEvaluacion
 from ui.widgets_comunes import BotonAyuda
 from ui.widgets_comunes import aplicar_cabeceras_por_bloque as _aplicar_cabeceras_por_bloque
@@ -107,14 +109,8 @@ class TablaCalificaciones(QWidget):
         fila_titulo.addWidget(BotonAyuda("Ayuda — Calificaciones", TEXTO_AYUDA_CALIFICACIONES))
         layout.addLayout(fila_titulo)
 
-        self.aviso_sin_instrumentos = QLabel("")
-        self.aviso_sin_instrumentos.setWordWrap(True)
-        self.aviso_sin_instrumentos.setStyleSheet(
-            "background-color: #FBE9CC; color: #5B4424; border-left: 4px solid #E8A33D; "
-            "border-radius: 6px; padding: 10px;"
-        )
-        self.aviso_sin_instrumentos.setVisible(False)
-        layout.addWidget(self.aviso_sin_instrumentos)
+        self.panel_salud = PanelSaludEvaluacion()
+        layout.addWidget(self.panel_salud)
 
         self.tabla = QTableWidget()
         self.tabla.setAlternatingRowColors(True)
@@ -188,18 +184,8 @@ class TablaCalificaciones(QWidget):
         dialogo.exec()
 
     def refrescar(self):
-        instrumentos = self.base_datos.listar_instrumentos(self.evaluacion.id)
-        if not instrumentos:
-            self.aviso_sin_instrumentos.setText(
-                "⚠️ Todavía no has creado ningún Instrumento de Evaluación (IE) en esta "
-                "evaluación, así que no hay notas que mostrar. Un IE es la prueba o "
-                "actividad con la que calificas a tu alumnado (un examen, una rúbrica de "
-                "observación, varios trabajos...). Ve a la pestaña «📝 Instrumentos de "
-                "Evaluación» para crear el primero."
-            )
-            self.aviso_sin_instrumentos.setVisible(True)
-        else:
-            self.aviso_sin_instrumentos.setVisible(False)
+        incidencias = revisar_salud_evaluacion(self.base_datos, self.materia, self.evaluacion)
+        self.panel_salud.actualizar(incidencias)
 
         criterios = self.base_datos.listar_criterios(self.materia.id)
         vista_alumnos = self.base_datos.listar_alumnos_para_evaluacion(
@@ -272,6 +258,14 @@ class TablaCalificaciones(QWidget):
                 item.setFont(fuente)
             self.tabla.setItem(fila, col_final_numero, item_numero_final)
             self.tabla.setItem(fila, col_final_letra, item_letra_final)
+
+    def showEvent(self, event: QShowEvent):
+        """Refresca la tabla al mostrarse, para que los cambios hechos
+        en otros paneles (como la calificación de una rúbrica) se
+        reflejen inmediatamente sin necesidad de salir y volver a entrar.
+        """
+        super().showEvent(event)
+        self.refrescar()
 
 
 class PanelEvaluacion(QWidget):

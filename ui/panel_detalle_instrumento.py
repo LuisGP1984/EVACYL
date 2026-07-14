@@ -32,6 +32,8 @@ from PySide6.QtWidgets import (
     QLabel,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
+    QTabWidget,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -46,6 +48,7 @@ from core.database import (
     TIPO_MANUAL,
     TIPO_MEDIA_ARITMETICA,
     TIPO_MEDIA_PONDERADA,
+    TIPO_RUBRICA,
 )
 from ui.estilos import COLOR_CELDA_IDENTIDAD_GRIS_CLARO
 from ui.widgets_comunes import (
@@ -126,6 +129,36 @@ class PanelDetalleInstrumento(QWidget):
         layout_general.addWidget(self.seccion_criterios)
 
         # -- zona de configuración específica del tipo (también plegable) --
+        # Para rúbricas, se construye un layout completamente distinto:
+        # sin SeccionPlegable, con las pestañas ocupando todo el espacio.
+        if instrumento.tipo == TIPO_RUBRICA:
+            from ui.panel_rubrica import PanelRubrica
+            from ui.panel_calificacion_rubrica import PanelCalificacionRubrica
+
+            # Tabla de notas vacía (necesaria para que los métodos que la
+            # referencian no fallen), pero nunca visible.
+            self.tabla_notas = TablaConBorrado()
+            self.tabla_notas.setVisible(False)
+
+            pestanas_rubrica = QTabWidget()
+            pestanas_rubrica.setSizePolicy(
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+            )
+            self.panel_rubrica = PanelRubrica(self.base_datos, self.materia, self.instrumento)
+            pestanas_rubrica.addTab(self.panel_rubrica, "⚙️ Configuración")
+
+            self.panel_calificacion_rubrica = PanelCalificacionRubrica(
+                self.base_datos, self.materia, self.instrumento
+            )
+            pestanas_rubrica.addTab(self.panel_calificacion_rubrica, "🏆 Calificar")
+
+            pestanas_rubrica.currentChanged.connect(
+                lambda idx: self.panel_calificacion_rubrica.refrescar() if idx == 1 else None
+            )
+
+            layout_general.addWidget(pestanas_rubrica, stretch=1)
+            return
+
         self.seccion_configuracion = SeccionPlegable(
             "Configuración", inicialmente_abierta=(len(marcados_iniciales) == 0)
         )
@@ -194,6 +227,7 @@ class PanelDetalleInstrumento(QWidget):
             TIPO_MEDIA_ARITMETICA: "Varias pruebas — media aritmética",
             TIPO_MEDIA_PONDERADA: "Varias pruebas — media ponderada",
             TIPO_EXAMEN: "Examen",
+            TIPO_RUBRICA: "Rúbrica",
         }.get(tipo, tipo)
 
     def _criterios_marcados_ordenados(self):
