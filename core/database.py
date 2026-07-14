@@ -81,7 +81,8 @@ TIPO_MANUAL = "MANUAL"
 TIPO_MEDIA_ARITMETICA = "MEDIA_ARITMETICA"
 TIPO_MEDIA_PONDERADA = "MEDIA_PONDERADA"
 TIPO_EXAMEN = "EXAMEN"
-TIPOS_INSTRUMENTO = [TIPO_MANUAL, TIPO_MEDIA_ARITMETICA, TIPO_MEDIA_PONDERADA, TIPO_EXAMEN]
+TIPO_RUBRICA = "RUBRICA"
+TIPOS_INSTRUMENTO = [TIPO_MANUAL, TIPO_MEDIA_ARITMETICA, TIPO_MEDIA_PONDERADA, TIPO_EXAMEN, TIPO_RUBRICA]
 
 
 @dataclass
@@ -135,6 +136,39 @@ class NotaCriterioInstrumentoAlumno:
     alumno_id: int
     valor: float | None
     es_manual: bool  # True si el docente ha editado este valor a mano
+
+
+@dataclass
+class RubricaNivel:
+    id: int
+    instrumento_id: int
+    etiqueta: str   # "Excelente", "Notable", "1", "2"...
+    valor_numerico: float  # nota numérica asociada (0-10)
+    orden: int
+
+
+@dataclass
+class RubricaGrupo:
+    id: int
+    instrumento_id: int
+    nombre: str  # "Grupo 1", "Equipo A"...
+
+
+@dataclass
+class RubricaNotaGrupo:
+    grupo_id: int
+    criterio_id: int
+    nivel_id: int | None       # None = sin calificar todavía
+    nota_ajustada: float | None  # None = usar valor_numerico del nivel
+
+
+@dataclass
+class RubricaNotaAlumno:
+    grupo_id: int
+    alumno_id: int
+    criterio_id: int
+    nivel_id: int | None       # None = heredar del grupo
+    nota_ajustada: float | None  # None = heredar del grupo
 
 
 # ---------------------------------------------------------------------------
@@ -251,6 +285,50 @@ class BaseDatosCurso:
                 nombre_evaluacion TEXT NOT NULL,
                 peso REAL NOT NULL DEFAULT 1,
                 PRIMARY KEY (materia_id, nombre_evaluacion)
+            );
+
+            CREATE TABLE IF NOT EXISTS rubrica_nivel (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                instrumento_id INTEGER NOT NULL REFERENCES instrumento_evaluacion(id) ON DELETE CASCADE,
+                etiqueta TEXT NOT NULL,
+                valor_numerico REAL NOT NULL,
+                orden INTEGER NOT NULL DEFAULT 0
+            );
+
+            CREATE TABLE IF NOT EXISTS rubrica_criterio_indicador (
+                instrumento_id INTEGER NOT NULL REFERENCES instrumento_evaluacion(id) ON DELETE CASCADE,
+                criterio_id INTEGER NOT NULL REFERENCES criterio(id) ON DELETE CASCADE,
+                indicador TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY (instrumento_id, criterio_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS rubrica_grupo (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                instrumento_id INTEGER NOT NULL REFERENCES instrumento_evaluacion(id) ON DELETE CASCADE,
+                nombre TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS rubrica_grupo_alumno (
+                grupo_id INTEGER NOT NULL REFERENCES rubrica_grupo(id) ON DELETE CASCADE,
+                alumno_id INTEGER NOT NULL REFERENCES alumno(id) ON DELETE CASCADE,
+                PRIMARY KEY (grupo_id, alumno_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS rubrica_nota_grupo (
+                grupo_id INTEGER NOT NULL REFERENCES rubrica_grupo(id) ON DELETE CASCADE,
+                criterio_id INTEGER NOT NULL REFERENCES criterio(id) ON DELETE CASCADE,
+                nivel_id INTEGER REFERENCES rubrica_nivel(id) ON DELETE SET NULL,
+                nota_ajustada REAL,
+                PRIMARY KEY (grupo_id, criterio_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS rubrica_nota_alumno (
+                grupo_id INTEGER NOT NULL REFERENCES rubrica_grupo(id) ON DELETE CASCADE,
+                alumno_id INTEGER NOT NULL REFERENCES alumno(id) ON DELETE CASCADE,
+                criterio_id INTEGER NOT NULL REFERENCES criterio(id) ON DELETE CASCADE,
+                nivel_id INTEGER REFERENCES rubrica_nivel(id) ON DELETE SET NULL,
+                nota_ajustada REAL,
+                PRIMARY KEY (grupo_id, alumno_id, criterio_id)
             );
             """
         )
@@ -1556,3 +1634,317 @@ class BaseDatosCurso:
                     self.marcar_criterio_en_instrumento(
                         instrumento_destino.id, criterio_destino_id, peso=relacion_origen.peso
                     )
+
+    # -- rúbrica: niveles de logro ------------------------------------------
+
+    def agregar_rubrica_nivel(
+        self, instrumento_id: int, etiqueta: str, valor_numerico: float, orden: int
+    ) -> RubricaNivel:
+        cur = self.conexion.execute(
+            "INSERT INTO rubrica_nivel (instrumento_id, etiqueta, valor_numerico, orden) VALUES (?, ?, ?, ?);",
+            (instrumento_id, etiqueta.strip(), valor_numerico, orden),
+        )
+        self.conexion.commit()
+        return RubricaNivel(id=cur.lastrowid, instrumento_id=instrumento_id,
+                            etiqueta=etiqueta.strip(), valor_numerico=valor_numerico, orden=orden)
+
+    def listar_rubrica_niveles(self, instrumento_id: int) -> list[RubricaNivel]:
+        cur = self.conexion.execute(
+            "SELECT id, instrumento_id, etiqueta, valor_numerico, orden "
+            "FROM rubrica_nivel WHERE instrumento_id = ? ORDER BY orden;",
+            (instrumento_id,),
+        )
+        return [RubricaNivel(id=r[0], instrumento_id=r[1], etiqueta=r[2],
+                             valor_numerico=r[3], orden=r[4]) for r in cur.fetchall()]
+
+    def actualizar_rubrica_nivel(
+        self, nivel_id: int, etiqueta: str, valor_numerico: float
+    ):
+        self.conexion.execute(
+            "UPDATE rubrica_nivel SET etiqueta = ?, valor_numerico = ? WHERE id = ?;",
+            (etiqueta.strip(), valor_numerico, nivel_id),
+        )
+        self.conexion.commit()
+
+    def eliminar_rubrica_nivel(self, nivel_id: int):
+        self.conexion.execute("DELETE FROM rubrica_nivel WHERE id = ?;", (nivel_id,))
+        self.conexion.commit()
+
+    def reordenar_rubrica_niveles(self, instrumento_id: int, ids_en_orden: list[int]):
+        for orden, nivel_id in enumerate(ids_en_orden, start=1):
+            self.conexion.execute(
+                "UPDATE rubrica_nivel SET orden = ? WHERE id = ? AND instrumento_id = ?;",
+                (orden, nivel_id, instrumento_id),
+            )
+        self.conexion.commit()
+
+    # -- rúbrica: indicadores de logro por criterio -------------------------
+
+    def obtener_rubrica_indicador(self, instrumento_id: int, criterio_id: int) -> str:
+        cur = self.conexion.execute(
+            "SELECT indicador FROM rubrica_criterio_indicador WHERE instrumento_id = ? AND criterio_id = ?;",
+            (instrumento_id, criterio_id),
+        )
+        fila = cur.fetchone()
+        return fila[0] if fila else ""
+
+    def guardar_rubrica_indicador(self, instrumento_id: int, criterio_id: int, indicador: str):
+        self.conexion.execute(
+            """INSERT INTO rubrica_criterio_indicador (instrumento_id, criterio_id, indicador)
+               VALUES (?, ?, ?)
+               ON CONFLICT(instrumento_id, criterio_id) DO UPDATE SET indicador = excluded.indicador;""",
+            (instrumento_id, criterio_id, indicador.strip()),
+        )
+        self.conexion.commit()
+
+    # -- rúbrica: grupos de alumnos -----------------------------------------
+
+    def agregar_rubrica_grupo(self, instrumento_id: int, nombre: str) -> RubricaGrupo:
+        cur = self.conexion.execute(
+            "INSERT INTO rubrica_grupo (instrumento_id, nombre) VALUES (?, ?);",
+            (instrumento_id, nombre.strip()),
+        )
+        self.conexion.commit()
+        return RubricaGrupo(id=cur.lastrowid, instrumento_id=instrumento_id, nombre=nombre.strip())
+
+    def listar_rubrica_grupos(self, instrumento_id: int) -> list[RubricaGrupo]:
+        cur = self.conexion.execute(
+            "SELECT id, instrumento_id, nombre FROM rubrica_grupo WHERE instrumento_id = ? ORDER BY id;",
+            (instrumento_id,),
+        )
+        return [RubricaGrupo(id=r[0], instrumento_id=r[1], nombre=r[2]) for r in cur.fetchall()]
+
+    def renombrar_rubrica_grupo(self, grupo_id: int, nombre: str):
+        self.conexion.execute(
+            "UPDATE rubrica_grupo SET nombre = ? WHERE id = ?;", (nombre.strip(), grupo_id)
+        )
+        self.conexion.commit()
+
+    def eliminar_rubrica_grupo(self, grupo_id: int):
+        self.conexion.execute("DELETE FROM rubrica_grupo WHERE id = ?;", (grupo_id,))
+        self.conexion.commit()
+
+    def agregar_alumno_a_grupo(self, grupo_id: int, alumno_id: int):
+        self.conexion.execute(
+            "INSERT OR IGNORE INTO rubrica_grupo_alumno (grupo_id, alumno_id) VALUES (?, ?);",
+            (grupo_id, alumno_id),
+        )
+        self.conexion.commit()
+
+    def quitar_alumno_de_grupo(self, grupo_id: int, alumno_id: int):
+        self.conexion.execute(
+            "DELETE FROM rubrica_grupo_alumno WHERE grupo_id = ? AND alumno_id = ?;",
+            (grupo_id, alumno_id),
+        )
+        self.conexion.commit()
+
+    def alumnos_de_grupo(self, grupo_id: int) -> list[Alumno]:
+        cur = self.conexion.execute(
+            """SELECT a.id, a.materia_id, a.apellidos, a.nombre, a.orden, a.orden_alta
+               FROM alumno a JOIN rubrica_grupo_alumno rga ON rga.alumno_id = a.id
+               WHERE rga.grupo_id = ? ORDER BY a.orden;""",
+            (grupo_id,),
+        )
+        return [Alumno(id=r[0], materia_id=r[1], apellidos=r[2],
+                       nombre=r[3], orden=r[4], orden_alta=r[5]) for r in cur.fetchall()]
+
+    def grupo_de_alumno(self, instrumento_id: int, alumno_id: int) -> RubricaGrupo | None:
+        """Devuelve el grupo al que pertenece el alumno en este IE, o None si
+        no está asignado a ninguno."""
+        cur = self.conexion.execute(
+            """SELECT rg.id, rg.instrumento_id, rg.nombre
+               FROM rubrica_grupo rg JOIN rubrica_grupo_alumno rga ON rga.grupo_id = rg.id
+               WHERE rg.instrumento_id = ? AND rga.alumno_id = ?;""",
+            (instrumento_id, alumno_id),
+        )
+        fila = cur.fetchone()
+        return RubricaGrupo(id=fila[0], instrumento_id=fila[1], nombre=fila[2]) if fila else None
+
+    def alumnos_sin_grupo(self, instrumento_id: int, materia_id: int) -> list[Alumno]:
+        """Alumnos de la materia que aún no están asignados a ningún grupo de este IE."""
+        cur = self.conexion.execute(
+            """SELECT a.id, a.materia_id, a.apellidos, a.nombre, a.orden, a.orden_alta
+               FROM alumno a
+               WHERE a.materia_id = ?
+               AND a.id NOT IN (
+                   SELECT rga.alumno_id FROM rubrica_grupo_alumno rga
+                   JOIN rubrica_grupo rg ON rg.id = rga.grupo_id
+                   WHERE rg.instrumento_id = ?
+               )
+               ORDER BY a.orden;""",
+            (materia_id, instrumento_id),
+        )
+        return [Alumno(id=r[0], materia_id=r[1], apellidos=r[2],
+                       nombre=r[3], orden=r[4], orden_alta=r[5]) for r in cur.fetchall()]
+
+    # -- rúbrica: notas de grupo y alumno -----------------------------------
+
+    def guardar_nota_grupo_rubrica(
+        self, grupo_id: int, criterio_id: int, nivel_id: int | None, nota_ajustada: float | None
+    ):
+        self.conexion.execute(
+            """INSERT INTO rubrica_nota_grupo (grupo_id, criterio_id, nivel_id, nota_ajustada)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(grupo_id, criterio_id) DO UPDATE SET
+                   nivel_id = excluded.nivel_id,
+                   nota_ajustada = excluded.nota_ajustada;""",
+            (grupo_id, criterio_id, nivel_id, nota_ajustada),
+        )
+        self.conexion.commit()
+
+    def obtener_nota_grupo_rubrica(self, grupo_id: int, criterio_id: int) -> RubricaNotaGrupo | None:
+        cur = self.conexion.execute(
+            "SELECT grupo_id, criterio_id, nivel_id, nota_ajustada "
+            "FROM rubrica_nota_grupo WHERE grupo_id = ? AND criterio_id = ?;",
+            (grupo_id, criterio_id),
+        )
+        fila = cur.fetchone()
+        return RubricaNotaGrupo(grupo_id=fila[0], criterio_id=fila[1],
+                                nivel_id=fila[2], nota_ajustada=fila[3]) if fila else None
+
+    def guardar_nota_alumno_rubrica(
+        self, grupo_id: int, alumno_id: int, criterio_id: int,
+        nivel_id: int | None, nota_ajustada: float | None
+    ):
+        """Guarda un ajuste individual sobre la nota del grupo. Si nivel_id y
+        nota_ajustada son ambos None, equivale a "sin ajuste" (hereda del grupo).
+        """
+        if nivel_id is None and nota_ajustada is None:
+            # Borrar el ajuste individual si existe
+            self.conexion.execute(
+                "DELETE FROM rubrica_nota_alumno WHERE grupo_id=? AND alumno_id=? AND criterio_id=?;",
+                (grupo_id, alumno_id, criterio_id),
+            )
+        else:
+            self.conexion.execute(
+                """INSERT INTO rubrica_nota_alumno (grupo_id, alumno_id, criterio_id, nivel_id, nota_ajustada)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(grupo_id, alumno_id, criterio_id) DO UPDATE SET
+                       nivel_id = excluded.nivel_id,
+                       nota_ajustada = excluded.nota_ajustada;""",
+                (grupo_id, alumno_id, criterio_id, nivel_id, nota_ajustada),
+            )
+        self.conexion.commit()
+
+    def calcular_nota_alumno_en_criterio_rubrica(
+        self, instrumento_id: int, alumno_id: int, criterio_id: int
+    ) -> float | None:
+        """Nota efectiva de un alumno en un criterio de una rúbrica:
+        1. Si tiene ajuste individual (rubrica_nota_alumno), lo usa.
+        2. Si no, hereda la nota del grupo al que pertenece.
+        3. En ambos casos: si hay nota_ajustada, esa es la nota final;
+           si no, se usa el valor_numerico del nivel elegido.
+        Devuelve None si no hay ninguna nota todavía.
+        """
+        grupo = self.grupo_de_alumno(instrumento_id, alumno_id)
+        if grupo is None:
+            return None
+
+        # Comprobar ajuste individual primero
+        cur = self.conexion.execute(
+            "SELECT nivel_id, nota_ajustada FROM rubrica_nota_alumno "
+            "WHERE grupo_id = ? AND alumno_id = ? AND criterio_id = ?;",
+            (grupo.id, alumno_id, criterio_id),
+        )
+        fila_alumno = cur.fetchone()
+
+        if fila_alumno is not None:
+            nivel_id, nota_ajustada = fila_alumno
+        else:
+            # Heredar del grupo
+            nota_grupo = self.obtener_nota_grupo_rubrica(grupo.id, criterio_id)
+            if nota_grupo is None:
+                return None
+            nivel_id, nota_ajustada = nota_grupo.nivel_id, nota_grupo.nota_ajustada
+
+        if nota_ajustada is not None:
+            return nota_ajustada
+
+        if nivel_id is not None:
+            cur = self.conexion.execute(
+                "SELECT valor_numerico FROM rubrica_nivel WHERE id = ?;", (nivel_id,)
+            )
+            fila_nivel = cur.fetchone()
+            return fila_nivel[0] if fila_nivel else None
+
+        return None
+
+    def propagar_notas_rubrica_a_criterios(self, instrumento_id: int, materia_id: int):
+        """Calcula la nota de cada alumno en cada criterio de la rúbrica y
+        la escribe en nota_criterio_instrumento_alumno, igual que haría
+        recalcular_notas_criterio_para_instrumento para los otros tipos de IE.
+        Así el resto del motor de cálculo (nota de evaluación, FINAL, etc.)
+        recibe exactamente lo mismo que con cualquier otro IE.
+        """
+        criterios = self.listar_criterios(materia_id)
+        alumnos = self.listar_alumnos(materia_id)
+
+        for criterio in criterios:
+            # Comprobar si este criterio está vinculado a la rúbrica
+            cur = self.conexion.execute(
+                "SELECT 1 FROM instrumento_criterio WHERE instrumento_id = ? AND criterio_id = ?;",
+                (instrumento_id, criterio.id),
+            )
+            if cur.fetchone() is None:
+                continue
+
+            for alumno in alumnos:
+                nota = self.calcular_nota_alumno_en_criterio_rubrica(
+                    instrumento_id, alumno.id, criterio.id
+                )
+                if nota is not None:
+                    self.conexion.execute(
+                        """INSERT INTO nota_criterio_instrumento_alumno
+                           (instrumento_id, criterio_id, alumno_id, valor, es_manual)
+                           VALUES (?, ?, ?, ?, 0)
+                           ON CONFLICT(instrumento_id, criterio_id, alumno_id)
+                           DO UPDATE SET valor = excluded.valor, es_manual = 0;""",
+                        (instrumento_id, criterio.id, alumno.id, nota),
+                    )
+        self.conexion.commit()
+
+        # Recalcular también la nota global del instrumento para cada alumno
+        self._recalcular_nota_instrumento_desde_criterios(instrumento_id, materia_id)
+
+    def _recalcular_nota_instrumento_desde_criterios(self, instrumento_id: int, materia_id: int):
+        """Calcula y guarda la nota global del instrumento para cada alumno,
+        a partir de las notas ya escritas en nota_criterio_instrumento_alumno.
+        Solo para rúbricas (los otros tipos ya tienen su propio flujo).
+        """
+        criterios = self.listar_criterios(materia_id)
+        alumnos = self.listar_alumnos(materia_id)
+
+        # Peso de cada criterio en el instrumento
+        relaciones = {r.criterio_id: r.peso for r in self.listar_criterios_de_instrumento(instrumento_id)}
+        if not relaciones:
+            return
+
+        for alumno in alumnos:
+            suma_pesos = 0.0
+            suma_ponderada = 0.0
+            for criterio in criterios:
+                if criterio.id not in relaciones:
+                    continue
+                cur = self.conexion.execute(
+                    "SELECT valor FROM nota_criterio_instrumento_alumno "
+                    "WHERE instrumento_id = ? AND criterio_id = ? AND alumno_id = ?;",
+                    (instrumento_id, criterio.id, alumno.id),
+                )
+                fila = cur.fetchone()
+                if fila is None or fila[0] is None:
+                    continue
+                peso = relaciones[criterio.id]
+                suma_pesos += peso
+                suma_ponderada += fila[0] * peso
+
+            if suma_pesos > 0:
+                nota = round(suma_ponderada / suma_pesos, 2)
+                self.conexion.execute(
+                    """INSERT INTO nota_instrumento_alumno (instrumento_id, alumno_id, valor)
+                       VALUES (?, ?, ?)
+                       ON CONFLICT(instrumento_id, alumno_id) DO UPDATE SET valor = excluded.valor;""",
+                    (instrumento_id, alumno.id, nota),
+                )
+        self.conexion.commit()
+
+    # fin de BaseDatosCurso
