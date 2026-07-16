@@ -44,6 +44,12 @@ TEXTO_AYUDA_CURSO = (
     "criterios (y, si quieres, también los instrumentos de evaluación con sus pesos y "
     "pruebas) de una materia que ya tengas hecha — de este curso académico o de cualquier "
     "otro. La materia nueva siempre empieza sin alumnado ni notas.\n\n"
+    "También puedes usar «📥 Importar materia…» para cargar una materia exportada por otro "
+    "docente (o por ti mismo desde otro curso). Al exportar puedes elegir entre exportar "
+    "solo la estructura (criterios y pesos, sin alumnado ni notas) o la materia completa.\n\n"
+    "El campo de búsqueda filtra la lista al momento mientras escribes. Si la materia existe "
+    "también en otros cursos académicos, los resultados aparecen debajo — haz doble clic "
+    "para abrirla directamente.\n\n"
     "Haz doble clic en una materia de la lista para entrar en ella."
 )
 
@@ -199,6 +205,11 @@ class VentanaCurso(VentanaConFondo):
         boton_crear.clicked.connect(self.crear_materia)
         layout_botones.addWidget(boton_crear)
 
+        boton_importar = QPushButton("📥 Importar materia…")
+        boton_importar.setObjectName("botonSecundario")
+        boton_importar.clicked.connect(self.importar_materia)
+        layout_botones.addWidget(boton_importar)
+
         boton_entrar = QPushButton("🔍 Entrar en la materia seleccionada")
         boton_entrar.clicked.connect(self.entrar_en_materia_seleccionada)
         layout_botones.addWidget(boton_entrar)
@@ -337,6 +348,96 @@ class VentanaCurso(VentanaConFondo):
                 )
 
         self.refrescar_lista_materias()
+
+    def importar_materia(self):
+        """Importa una materia desde un archivo .evacyl. El docente
+        elige el archivo y el curso destino donde crearla.
+        """
+        from PySide6.QtWidgets import QFileDialog
+        from core.exportacion_materia import importar_materia, leer_metadatos_archivo
+
+        # 1. Elegir el archivo .evacyl
+        ruta_texto, _ = QFileDialog.getOpenFileName(
+            self, "Importar materia", "",
+            "Materia EVACYL (*.evacyl)"
+        )
+        if not ruta_texto:
+            return
+        ruta = Path(ruta_texto)
+
+        # 2. Leer metadatos para mostrar información antes de confirmar
+        try:
+            meta = leer_metadatos_archivo(ruta)
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.critical(self, "Archivo no válido", f"No se pudo leer el archivo:\n{exc}")
+            return
+
+        nombre_original = meta["nombre"]
+
+        # 3. Elegir curso destino (por defecto el curso actual)
+        cursos = _cursos_disponibles(self.carpeta_docente)
+        nombres_cursos = [c.name for c in cursos]
+        nombre_curso_actual = self.ruta_bd.parent.name
+        indice_actual = nombres_cursos.index(nombre_curso_actual) if nombre_curso_actual in nombres_cursos else 0
+
+        nombre_curso_elegido, ok = QInputDialog.getItem(
+            self,
+            "Seleccionar curso destino",
+            f"Importar «{nombre_original}» ({meta['num_criterios']} criterios, "
+            f"{meta['num_alumnos']} alumnos) en el curso:",
+            nombres_cursos, indice_actual, False
+        )
+        if not ok:
+            return
+
+        ruta_bd_destino = cursos[nombres_cursos.index(nombre_curso_elegido)] / NOMBRE_ARCHIVO_BD
+        misma_bd = ruta_bd_destino == self.ruta_bd
+        base_datos_destino = self.base_datos if misma_bd else BaseDatosCurso(ruta_bd_destino)
+
+        try:
+            # 4. Comprobar si ya existe una materia con ese nombre
+            nombre_a_usar = nombre_original
+            materias_existentes = [m.nombre for m in base_datos_destino.listar_materias()]
+            if nombre_original in materias_existentes:
+                respuesta = QMessageBox.question(
+                    self,
+                    "Nombre ya existe",
+                    f"Ya existe una materia llamada «{nombre_original}» en el curso «{nombre_curso_elegido}».\n\n"
+                    "¿Quieres crear una copia con un nombre distinto?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                )
+                if respuesta != QMessageBox.StandardButton.Yes:
+                    return
+                nombre_a_usar, ok = QInputDialog.getText(
+                    self, "Nombre para la copia",
+                    "Introduce un nombre para la materia importada:",
+                    text=f"{nombre_original} (importada)"
+                )
+                if not ok or not nombre_a_usar.strip():
+                    return
+                nombre_a_usar = nombre_a_usar.strip()
+                if nombre_a_usar in materias_existentes:
+                    QMessageBox.warning(
+                        self, "Nombre ya existe",
+                        f"«{nombre_a_usar}» también existe ya. Importación cancelada."
+                    )
+                    return
+
+            # 5. Importar
+            importar_materia(base_datos_destino, ruta, nombre_override=nombre_a_usar)
+
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.critical(self, "Error al importar", str(exc))
+            return
+        finally:
+            if not misma_bd:
+                base_datos_destino.cerrar()
+
+        self.refrescar_lista_materias()
+        QMessageBox.information(
+            self, "Importación completada",
+            f"Materia «{nombre_a_usar}» importada correctamente en el curso «{nombre_curso_elegido}»."
+        )
 
     def _copiar_estructura_materia(
         self, ruta_bd_origen: Path, nombre_materia_origen: str, materia_destino_id: int, nivel_copia: str

@@ -49,6 +49,12 @@ class VentanaMateria(QMainWindow):
         boton_inicio.clicked.connect(self._ir_a_inicio)
         layout_barra.addWidget(boton_inicio)
         layout_barra.addStretch()
+
+        boton_exportar_materia = QPushButton("📤 Exportar materia…")
+        boton_exportar_materia.setObjectName("botonSecundario")
+        boton_exportar_materia.clicked.connect(self._exportar_materia)
+        layout_barra.addWidget(boton_exportar_materia)
+
         layout_raiz.addWidget(barra_superior)
 
         self.pestanas = QTabWidget()
@@ -91,3 +97,52 @@ class VentanaMateria(QMainWindow):
         self.panel_criterios.refrescar()
         for panel in self.paneles_refrescables:
             panel.refrescar()
+
+    def _exportar_materia(self):
+        from pathlib import Path
+        from PySide6.QtWidgets import (
+            QDialog, QDialogButtonBox, QFileDialog, QLabel, QMessageBox, QRadioButton, QVBoxLayout
+        )
+        from core.exportacion_materia import exportar_materia
+
+        # Diálogo de selección de modo
+        dialogo = QDialog(self)
+        dialogo.setWindowTitle("Exportar materia")
+        dialogo.setMinimumWidth(400)
+        layout = QVBoxLayout(dialogo)
+        layout.addWidget(QLabel("¿Qué quieres incluir en el archivo exportado?"))
+        rb_completo = QRadioButton("Materia completa: criterios, instrumentos, alumnado y notas")
+        rb_completo.setChecked(True)
+        rb_estructura = QRadioButton("Solo estructura: criterios y pesos (sin instrumentos ni notas)")
+        layout.addWidget(rb_completo)
+        layout.addWidget(rb_estructura)
+        botones = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        botones.accepted.connect(dialogo.accept)
+        botones.rejected.connect(dialogo.reject)
+        layout.addWidget(botones)
+        if dialogo.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        solo_estructura = rb_estructura.isChecked()
+
+        nombre_sugerido = f"{self.materia.nombre}.evacyl"
+        ruta_texto, _ = QFileDialog.getSaveFileName(
+            self, "Exportar materia", nombre_sugerido,
+            "Materia EVACYL (*.evacyl)"
+        )
+        if not ruta_texto:
+            return
+        ruta = Path(ruta_texto)
+        if ruta.suffix.lower() != ".evacyl":
+            ruta = ruta.with_suffix(".evacyl")
+        try:
+            exportar_materia(self.base_datos, self.materia, ruta, solo_estructura=solo_estructura)
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.critical(self, "Error al exportar", str(exc))
+            return
+        tipo_texto = "estructura (criterios y pesos)" if solo_estructura else "materia completa"
+        QMessageBox.information(
+            self, "Exportación completada",
+            f"Exportada correctamente como {tipo_texto}:\n{ruta}\n\n"
+            "Puedes compartir este archivo con otros docentes que usen EVACYL."
+        )
